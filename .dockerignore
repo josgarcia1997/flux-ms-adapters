@@ -1,0 +1,37 @@
+# Dependencies
+node_modules
+.pnpm-store
+
+# Build output
+dist
+build
+coverage
+
+# Git
+.git
+.gitignore
+
+# Environment (mount or pass at runtime)
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.idea
+.vscode
+.DS_Store
+
+# Logs and temp
+*.log
+.temp
+.tmp
+
+# Tests
+test
+*.spec.ts
+jest.config.js
+.eslintrc*
+.prettierrc
+
+# Docs (optional: remove if you want them in the image)
+docs
