@@ -9,7 +9,8 @@ import {
   Permission,
   RolePermission,
   UserRole,
-  Session,
+  OAuthAccessToken,
+  OAuthRefreshToken,
   OutboxEvent,
   PasswordReset,
   Party,
@@ -21,7 +22,7 @@ import {
   IdentificationType,
 } from './entities';
 import { UserRepository } from './repository/user.repository';
-import { SessionRepository } from './repository/session.repository';
+import { OAuthTokenRepository } from './repository/oauth-token.repository';
 import { TenantContextService } from '../../common/services/tenant-context.service';
 import { AuthService } from './services/auth.service';
 import { OutboxService } from './services/outbox.service';
@@ -48,7 +49,8 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
       Permission,
       RolePermission,
       UserRole,
-      Session,
+      OAuthAccessToken,
+      OAuthRefreshToken,
       OutboxEvent,
       PasswordReset,
       Party,
@@ -65,7 +67,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
     TenantContextService,
     JwtAuthGuard,
     UserRepository,
-    SessionRepository,
+    OAuthTokenRepository,
     OutboxService,
     AuthService,
   ],

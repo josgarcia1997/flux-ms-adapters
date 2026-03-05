@@ -9,12 +9,10 @@ import {
   DeletedAt,
   ForeignKey,
   BelongsTo,
-  HasMany,
   BelongsToMany,
 } from 'sequelize-typescript';
 const DataTypes = require('sequelize').DataTypes;
 import { Tenant } from './tenant.entity';
-import { Session } from './session.entity';
 import { Role } from './role.entity';
 import { UserRole } from './user-role.entity';
 
@@ -61,9 +59,6 @@ export class User extends Model {
 
   @BelongsTo(() => Tenant)
   tenant: Tenant;
-
-  @HasMany(() => Session)
-  sessions: Session[];
 
   @BelongsToMany(() => Role, () => UserRole)
   roles: Role[];

@@ -4,7 +4,7 @@ import { Injectable, UnauthorizedException, ForbiddenException, ConflictExceptio
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { UserRepository } from '../repository/user.repository';
-import { SessionRepository } from '../repository/session.repository';
+import { OAuthTokenRepository } from '../repository/oauth-token.repository';
 import { LoginDto } from '../dto/login.dto';
 import { RegisterRequestDto } from '../dto/register-request.dto';
 import { RegisterConfirmDto } from '../dto/register-confirm.dto';
@@ -51,7 +51,7 @@ export interface MeResponse {
 export class AuthService {
   constructor(
     private readonly userRepository: UserRepository,
-    private readonly sessionRepository: SessionRepository,
+    private readonly oauthTokenRepository: OAuthTokenRepository,
     private readonly tenantContext: TenantContextService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
@@ -211,14 +211,15 @@ export class AuthService {
     });
 
     const refreshToken = this.generateRefreshToken();
-    const session = await this.sessionRepository.create({
-      userId: user.id,
-      refreshTokenHash: this.hashRefreshToken(refreshToken),
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      ipAddress: ip,
-      userAgent,
-    });
-    const access_token = this.issueAccessToken(user.id, tenantId, session.id);
+    const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const clientId = this.configService.get<number>('app.oauthClientId') ?? 1;
+    const { accessTokenId } = await this.oauthTokenRepository.createTokenPair(
+      user.id,
+      this.hashRefreshToken(refreshToken),
+      refreshExpiresAt,
+      clientId,
+    );
+    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId);
     const name = user.username ?? user.email;
     const expiresIn = this.configService.get<string>('app.jwtExpiresIn') ?? '15m';
     const expiresInSeconds = expiresIn === '15m' ? 900 : 3600;
@@ -446,14 +447,15 @@ export class AuthService {
       throw new ForbiddenException('User is inactive');
     }
     const refreshToken = this.generateRefreshToken();
-    const session = await this.sessionRepository.create({
-      userId: user.id,
-      refreshTokenHash: this.hashRefreshToken(refreshToken),
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      ipAddress: ip,
-      userAgent,
-    });
-    const access_token = this.issueAccessToken(user.id, tenantId, session.id);
+    const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const clientId = this.configService.get<number>('app.oauthClientId') ?? 1;
+    const { accessTokenId } = await this.oauthTokenRepository.createTokenPair(
+      user.id,
+      this.hashRefreshToken(refreshToken),
+      refreshExpiresAt,
+      clientId,
+    );
+    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId);
     const name = user.username ?? user.email;
     const expiresIn = this.configService.get<string>('app.jwtExpiresIn') ?? '15m';
     const expiresInSeconds = expiresIn === '15m' ? 900 : 3600;
@@ -470,23 +472,26 @@ export class AuthService {
 
   async refresh(refreshToken: string): Promise<LoginResponse> {
     const hash = this.hashRefreshToken(refreshToken);
-    const session = await this.sessionRepository.findByRefreshTokenHash(hash);
-    if (!session || !session.isActive || new Date() > session.expiresAt) {
+    const found = await this.oauthTokenRepository.findByRefreshTokenHash(hash);
+    if (!found) {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
-    await this.sessionRepository.invalidate(session.id);
+    await this.oauthTokenRepository.revokeByAccessTokenId(found.accessTokenId);
     const tenantId = this.tenantContext.getTenantId();
-    const user = await this.userRepository.findById(session.userId);
+    const user = await this.userRepository.findById(found.userId);
     if (!user || user.status !== 'active') {
       throw new UnauthorizedException('Invalid credentials');
     }
     const newRefreshToken = this.generateRefreshToken();
-    const newSession = await this.sessionRepository.create({
-      userId: user.id,
-      refreshTokenHash: this.hashRefreshToken(newRefreshToken),
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-    });
-    const access_token = this.issueAccessToken(user.id, tenantId, newSession.id);
+    const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const clientId = this.configService.get<number>('app.oauthClientId') ?? 1;
+    const { accessTokenId } = await this.oauthTokenRepository.createTokenPair(
+      user.id,
+      this.hashRefreshToken(newRefreshToken),
+      refreshExpiresAt,
+      clientId,
+    );
+    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId);
     const name = user.username ?? user.email;
     const expiresIn = this.configService.get<string>('app.jwtExpiresIn') ?? '15m';
     const expiresInSeconds = expiresIn === '15m' ? 900 : 3600;
@@ -537,18 +542,15 @@ export class AuthService {
     };
   }
 
-  async logout(sessionId: string): Promise<void> {
-    const session = await this.sessionRepository.findById(sessionId);
-    if (session && session.isActive) {
-      await this.sessionRepository.invalidate(sessionId);
-    }
+  async logout(accessTokenId: string): Promise<void> {
+    await this.oauthTokenRepository.revokeByAccessTokenId(accessTokenId);
   }
 
-  private issueAccessToken(userId: string, tenantId: string, sessionId: string): string {
+  private issueAccessToken(userId: string, tenantId: string, accessTokenId: string): string {
     const secret = this.configService.get<string>('app.jwtSecret');
     const expiresIn = this.configService.get<string>('app.jwtExpiresIn') ?? '15m';
     return this.jwtService.sign(
-      { sub: userId, tenantId, sessionId },
+      { sub: userId, tenantId, sessionId: accessTokenId },
       { secret, expiresIn },
     );
   }
