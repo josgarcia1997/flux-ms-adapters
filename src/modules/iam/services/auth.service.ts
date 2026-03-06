@@ -386,15 +386,15 @@ export class AuthService {
 
   /**
    * Paso 4: KYC y dirección (party.addresses). Requiere JWT.
+   * El party se identifica por partyId en el token; si no viene, se resuelve el más reciente del usuario por email.
    */
   async registerKyc(userId: string, tenantId: string, dto: RegisterKycDto, partyIdFromToken?: string): Promise<{ ok: boolean }> {
     const user = await this.userRepository.findById(userId);
     if (!user || user.tenantId !== tenantId) {
       throw new UnauthorizedException('User not found');
     }
-    const party = partyIdFromToken
-      ? await this.findPartyById(partyIdFromToken, tenantId)
-      : await this.findPartyForUser(user);
+    const partyIdToUse = partyIdFromToken ?? (await this.findOnePartyIdForUser(user));
+    const party = partyIdToUse ? await this.findPartyById(partyIdToUse, tenantId) : null;
     if (!party) {
       throw new BadRequestException('Party not found. Complete registration first.');
     }
@@ -450,6 +450,25 @@ export class AuthService {
             now: updatedAt,
           },
           type: QueryTypes.RAW,
+        },
+      );
+    }
+
+    if (dto.dateIssue != null && dto.dateIssue !== '') {
+      await sequelize.query(
+        `UPDATE party.documents SET issued_at = :dateIssue, updated_at = :updatedAt WHERE party_id = :partyId AND tenant_id = :tenantId`,
+        {
+          replacements: { partyId: party.id, tenantId, dateIssue: dto.dateIssue, updatedAt },
+          type: QueryTypes.UPDATE,
+        },
+      );
+    }
+    if (dto.kycResult != null && dto.kycResult !== '') {
+      await sequelize.query(
+        `UPDATE party.kyc_cases SET status = :status, updated_at = :updatedAt WHERE party_id = :partyId AND tenant_id = :tenantId AND deleted_at IS NULL`,
+        {
+          replacements: { partyId: party.id, tenantId, status: dto.kycResult.trim(), updatedAt },
+          type: QueryTypes.UPDATE,
         },
       );
     }
@@ -514,6 +533,21 @@ export class AuthService {
       dateBirth: row.date_birth,
       status: row.status,
     });
+  }
+
+  /** Devuelve un party_id para el usuario cuando hay varios (el más reciente por created_at). Para poner en JWT en login/refresh. */
+  private async findOnePartyIdForUser(user: { email: string; tenantId: string }): Promise<string | null> {
+    const sequelize = this.partyModel.sequelize;
+    if (!sequelize) return null;
+    const email = user.email.toLowerCase();
+    const rows = await sequelize.query<{ party_id: string }>(
+      `SELECT pc.party_id FROM party.party_contacts pc
+       INNER JOIN party.parties p ON p.id = pc.party_id AND p.tenant_id = pc.tenant_id AND p.deleted_at IS NULL
+       WHERE pc.tenant_id = :tenantId AND pc.kind = 'email' AND pc.value = :email
+       ORDER BY p.created_at DESC LIMIT 1`,
+      { replacements: { tenantId: user.tenantId, email }, type: QueryTypes.SELECT },
+    );
+    return rows?.[0]?.party_id ?? null;
   }
 
   /** Resolve party for user via party_contacts (email + tenant). Usa raw query para coincidir con los INSERT en paso 3. */
@@ -598,7 +632,8 @@ export class AuthService {
       refreshExpiresAt,
       clientId,
     );
-    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId);
+    const partyId = await this.findOnePartyIdForUser(user);
+    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId, partyId ?? undefined);
     const name = user.username ?? user.email;
     const expiresIn = this.configService.get<string>('app.jwtExpiresIn') ?? '15m';
     const expiresInSeconds = expiresIn === '15m' ? 900 : 3600;
@@ -634,7 +669,8 @@ export class AuthService {
       refreshExpiresAt,
       clientId,
     );
-    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId);
+    const partyId = await this.findOnePartyIdForUser(user);
+    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId, partyId ?? undefined);
     const name = user.username ?? user.email;
     const expiresIn = this.configService.get<string>('app.jwtExpiresIn') ?? '15m';
     const expiresInSeconds = expiresIn === '15m' ? 900 : 3600;
