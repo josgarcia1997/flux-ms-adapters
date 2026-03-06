@@ -1,15 +1,23 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
   IsDateString,
   IsNotEmpty,
+  IsOptional,
   IsString,
   IsUUID,
   Length,
   MaxLength,
+  MinLength,
 } from 'class-validator';
 
 export class RegisterProfileDto {
+  @ApiPropertyOptional({ description: 'Required when completing registration with registration token (step 3)', minLength: 12 })
+  @IsOptional()
+  @IsString()
+  @MinLength(12, { message: 'Password must be at least 12 characters' })
+  password?: string;
+
   @ApiProperty({ maxLength: 120 })
   @IsString()
   @IsNotEmpty()

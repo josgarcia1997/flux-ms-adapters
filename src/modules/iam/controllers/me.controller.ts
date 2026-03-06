@@ -14,8 +14,9 @@ export class MeController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get current user' })
   async me(@Req() req: RequestWithAuth): Promise<MeResponse> {
-    const userId = req.user?.userId;
-    const tenantId = req.user?.tenantId;
+    const u = req.user;
+    const userId = u && 'userId' in u ? u.userId : undefined;
+    const tenantId = u?.tenantId;
     if (!userId || !tenantId) throw new UnauthorizedException('Missing user context');
     const me = await this.authService.getMe(userId, tenantId);
     if (!me) throw new UnauthorizedException('User not found');
@@ -27,8 +28,9 @@ export class MeController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get KYC status of current user\'s party' })
   async getKycStatus(@Req() req: RequestWithAuth): Promise<{ kyc_status: string | null }> {
-    const userId = req.user?.userId;
-    const tenantId = req.user?.tenantId;
+    const u = req.user;
+    const userId = u && 'userId' in u ? u.userId : undefined;
+    const tenantId = u?.tenantId;
     if (!userId || !tenantId) throw new UnauthorizedException('Missing user context');
     return this.authService.getKycStatus(userId, tenantId);
   }

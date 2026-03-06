@@ -108,12 +108,8 @@ export class AuthService {
     return { message: 'Code sent to your email. Check your inbox and confirm registration.' };
   }
 
-  /** Paso 2: validar OTP, crear la cuenta y devolver token para no pedir login. Emite UserCreated en outbox. */
-  async registerConfirm(
-    dto: RegisterConfirmDto,
-    ip?: string,
-    userAgent?: string,
-  ): Promise<LoginResponse> {
+  /** Paso 2: validar OTP y devolver registration token. No crea usuario ni party; todo se crea en paso 3. */
+  async registerConfirm(dto: RegisterConfirmDto): Promise<{ registrationToken: string; expiresIn: number }> {
     const tenantId = this.tenantContext.getTenantId();
     const email = dto.email.toLowerCase();
     const row = await this.passwordResetModel.findOne({ where: { email } });
@@ -135,62 +131,120 @@ export class AuthService {
       await row.destroy();
       throw new ConflictException('The email has already been taken.');
     }
+    await row.destroy();
+    const registrationToken = this.issueRegistrationToken(email, dto.username, tenantId);
+    return { registrationToken, expiresIn: 900 };
+  }
+
+  /**
+   * Paso 3 con registration token: crea usuario, party, party_contact, kyc_case, document y devuelve tokens de login.
+   * Requiere dto.password. Usar el token devuelto por registerConfirm en Authorization: Bearer <registrationToken>.
+   */
+  async completeRegistration(
+    regUser: { email: string; username: string; tenantId: string },
+    dto: RegisterProfileDto,
+    ip?: string,
+    userAgent?: string,
+  ): Promise<LoginResponse> {
+    if (!dto.password || dto.password.length < 12) {
+      throw new BadRequestException('Password is required and must be at least 12 characters.');
+    }
+    const tenantId = regUser.tenantId;
+    const email = regUser.email.toLowerCase();
+    const existing = await this.userRepository.findByEmail(email, tenantId);
+    if (existing) {
+      throw new ConflictException('The email has already been taken.');
+    }
+    const country = await this.countryModel.findOne({ where: { id: dto.countryId, status: true } });
+    if (!country) {
+      throw new BadRequestException('Invalid country.');
+    }
+    const idType = await this.identificationTypeModel.findOne({
+      where: { id: dto.identificationTypeId, countryId: dto.countryId, status: true },
+    });
+    if (!idType) {
+      throw new BadRequestException('Invalid identification type for this country.');
+    }
     const passwordHash = await bcrypt.hash(dto.password, 10);
+    const pinHash = await bcrypt.hash(dto.pin, 10);
+    const legalName = `${dto.firstName.trim()} ${dto.lastName.trim()}`;
+    const displayName = regUser.username?.trim() || email;
+
     const user = await this.userRepository.create({
       tenantId,
       email,
-      username: dto.username,
+      username: regUser.username,
       passwordHash,
       status: 'active',
+      pinHash,
+      termsAcceptedAt: dto.termsAccepted ? new Date() : null,
     });
-    await row.destroy();
 
-    // Crear Party, PartyContact y kyc_case en paso 2; el status de la respuesta sale del registro creado (RETURNING)
-    let kyc_statusFromNewCase: string | null = null;
     const sequelize = this.partyModel.sequelize;
-    if (sequelize) {
-      const now = new Date();
-      const displayName = dto.username?.trim() || email;
-      const partyRows = await sequelize.query<{ id: string }>(
-        `INSERT INTO party.parties (tenant_id, type, display_name, legal_name, document_type, document_number, status, created_at, updated_at)
-         VALUES (:tenantId, 'person', :displayName, NULL, NULL, NULL, 'active', :now, :now)
-         RETURNING id`,
+    if (!sequelize) throw new BadRequestException('Database connection not available');
+    const now = new Date();
+
+    const partyRows = await sequelize.query<{ id: string }>(
+      `INSERT INTO party.parties (tenant_id, type, display_name, legal_name, date_birth, document_type, document_number, status, created_at, updated_at)
+       VALUES (:tenantId, 'person', :displayName, :legalName, :dateBirth, :documentType, :documentNumber, 'active', :now, :now)
+       RETURNING id`,
+      {
+        replacements: {
+          tenantId,
+          displayName,
+          legalName,
+          dateBirth: dto.dateBirth,
+          documentType: idType.docType,
+          documentNumber: dto.documentNumber,
+          now,
+        },
+        type: QueryTypes.SELECT,
+      },
+    );
+    const partyId = partyRows?.[0]?.id;
+    if (!partyId) throw new BadRequestException('Could not create party.');
+
+    await sequelize.query(
+      `INSERT INTO party.party_contacts (id, tenant_id, party_id, kind, value, is_primary, created_at, updated_at)
+       VALUES (gen_random_uuid(), :tenantId, :partyId, 'email', :email, true, :now, :now)`,
+      {
+        replacements: { tenantId, partyId, email, now },
+        type: QueryTypes.RAW,
+      },
+    );
+
+    try {
+      await sequelize.query(
+        `INSERT INTO party.kyc_cases (
+          id, tenant_id, party_id, status, level, metadata, submitted_at, reviewed_at, reviewed_by, created_at, updated_at
+        ) VALUES (
+          gen_random_uuid(), :tenantId, :partyId, 'pending', 'basic', NULL, :now, NULL, NULL, :now, :now
+        )`,
         {
-          replacements: { tenantId, displayName, now },
-          type: QueryTypes.SELECT,
+          replacements: { tenantId, partyId, now },
+          type: QueryTypes.RAW,
         },
       );
-      const partyId = partyRows?.[0]?.id;
-      if (partyId) {
-        await sequelize.query(
-          `INSERT INTO party.party_contacts (id, tenant_id, party_id, kind, value, is_primary, created_at, updated_at)
-           VALUES (gen_random_uuid(), :tenantId, :partyId, 'email', :email, true, :now, :now)`,
-          {
-            replacements: { tenantId, partyId, email, now },
-            type: QueryTypes.RAW,
-          },
-        );
-        try {
-          // INSERT raw igual que Laravel: id, tenant_id, party_id, status, level, metadata, submitted_at, reviewed_at, reviewed_by, created_at, updated_at
-          const kycRows = await sequelize.query(
-            `INSERT INTO party.kyc_cases (
-              id, tenant_id, party_id, status, level, metadata, submitted_at, reviewed_at, reviewed_by, created_at, updated_at
-            ) VALUES (
-              gen_random_uuid(), :tenantId, :partyId, 'pending', 'basic', NULL, :now, NULL, NULL, :now, :now
-            ) RETURNING id, status`,
-            {
-              replacements: { tenantId, partyId, now },
-              type: QueryTypes.SELECT,
-            },
-          ) as { id: string; status: string }[];
-          kyc_statusFromNewCase = kycRows?.[0]?.status ?? null;
-        } catch (err: any) {
-          throw new BadRequestException(
-            `Could not create kyc_case: ${err?.message ?? err}. Check that party.kyc_cases exists.`,
-          );
-        }
-      }
+    } catch (err: any) {
+      throw new BadRequestException(
+        `Could not create kyc_case: ${err?.message ?? err}. Check that party.kyc_cases exists.`,
+      );
     }
+
+    const [doc] = await this.documentModel.findOrCreate({
+      where: { partyId, tenantId, docType: idType.docType },
+      defaults: {
+        partyId,
+        tenantId,
+        docType: idType.docType,
+        docNumber: dto.documentNumber,
+        country: country.countryCode,
+        isPrimary: true,
+      } as any,
+    });
+    doc.docNumber = dto.documentNumber;
+    doc.country = country.countryCode;
+    await doc.save();
 
     const opsRole = await this.roleModel.findOne({ where: { tenantId, name: 'ops' } });
     if (opsRole) {
@@ -219,11 +273,11 @@ export class AuthService {
       refreshExpiresAt,
       clientId,
     );
-    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId);
+    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId, partyId);
     const name = user.username ?? user.email;
     const expiresIn = this.configService.get<string>('app.jwtExpiresIn') ?? '15m';
     const expiresInSeconds = expiresIn === '15m' ? 900 : 3600;
-    const kyc_status = kyc_statusFromNewCase ?? (await this.getKycStatusForUser(user));
+    const kyc_status = 'pending';
     return {
       access_token,
       token_type: 'Bearer',
@@ -232,6 +286,14 @@ export class AuthService {
       refresh_token: refreshToken,
       expires_in: expiresInSeconds,
     };
+  }
+
+  private issueRegistrationToken(email: string, username: string, tenantId: string): string {
+    const secret = this.configService.get<string>('app.jwtSecret');
+    return this.jwtService.sign(
+      { reg: true, email, username, tenantId, sub: email },
+      { secret, expiresIn: '15m' },
+    );
   }
 
   /** Step 3: complete profile (names, document, PIN, T&C). Actualiza el party creado en paso 2 (no crea uno nuevo). */
@@ -324,20 +386,15 @@ export class AuthService {
 
   /**
    * Paso 4: KYC y dirección (party.addresses). Requiere JWT.
-   *
-   * Cómo funciona:
-   * 1. Busca el usuario por userId/tenantId y el party por email (party_contacts).
-   * 2. Actualiza party.parties (legal_name, date_birth) con UPDATE raw.
-   * 3. Busca o crea una fila en party.addresses para ese party:
-   *    - Si ya existe (mismo party_id + tenant_id), hace UPDATE raw de line1, line2, city, state, country.
-   *    - Si no existe, hace INSERT raw en party.addresses con todos los campos.
    */
-  async registerKyc(userId: string, tenantId: string, dto: RegisterKycDto): Promise<{ ok: boolean }> {
+  async registerKyc(userId: string, tenantId: string, dto: RegisterKycDto, partyIdFromToken?: string): Promise<{ ok: boolean }> {
     const user = await this.userRepository.findById(userId);
     if (!user || user.tenantId !== tenantId) {
       throw new UnauthorizedException('User not found');
     }
-    const party = await this.findPartyForUser(user);
+    const party = partyIdFromToken
+      ? await this.findPartyById(partyIdFromToken, tenantId)
+      : await this.findPartyForUser(user);
     if (!party) {
       throw new BadRequestException('Party not found. Complete registration first.');
     }
@@ -399,15 +456,101 @@ export class AuthService {
     return { ok: true };
   }
 
-  /** Resolve party for user via party_contacts (email + tenant). Solo devuelve party si pertenece al mismo tenant. */
+  /** Países activos (core.countries). */
+  async getCountries(): Promise<{ id: string; country_code: string; country: string; currency_code: string | null; status: boolean }[]> {
+    const rows = await this.countryModel.findAll({
+      where: { status: true },
+      attributes: ['id', 'countryCode', 'country', 'currencyCode', 'status'],
+      order: [['country', 'ASC']],
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      country_code: r.countryCode,
+      country: r.country,
+      currency_code: r.currencyCode ?? null,
+      status: r.status,
+    }));
+  }
+
+  /** Catálogo: tipos de identificación activos (core.identification_types). Opcionalmente por countryId. */
+  async getIdentificationTypes(countryId?: string): Promise<{ id: string; country_id: string; doc_type: string; description: string; status: boolean }[]> {
+    const where: any = { status: true };
+    if (countryId) where.countryId = countryId;
+    const rows = await this.identificationTypeModel.findAll({
+      where,
+      attributes: ['id', 'countryId', 'docType', 'description', 'status'],
+      order: [['description', 'ASC']],
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      country_id: r.countryId,
+      doc_type: r.docType,
+      description: r.description,
+      status: r.status,
+    }));
+  }
+
+  /** Carga party por id y tenant (para uso cuando el JWT trae partyId). */
+  private async findPartyById(partyId: string, tenantId: string): Promise<Party | null> {
+    const sequelize = this.partyModel.sequelize;
+    if (!sequelize) return null;
+    const parties = await sequelize.query<{ id: string; tenant_id: string; type: string; display_name: string; legal_name: string | null; document_type: string | null; document_number: string | null; date_birth: string | null; status: string }>(
+      `SELECT id, tenant_id, type, display_name, legal_name, document_type, document_number, date_birth, status FROM party.parties WHERE id = :partyId AND tenant_id = :tenantId AND deleted_at IS NULL LIMIT 1`,
+      {
+        replacements: { partyId, tenantId },
+        type: QueryTypes.SELECT,
+      },
+    );
+    const row = parties?.[0];
+    if (!row) return null;
+    return this.partyModel.build({
+      id: row.id,
+      tenantId: row.tenant_id,
+      type: row.type,
+      displayName: row.display_name,
+      legalName: row.legal_name,
+      documentType: row.document_type,
+      documentNumber: row.document_number,
+      dateBirth: row.date_birth,
+      status: row.status,
+    });
+  }
+
+  /** Resolve party for user via party_contacts (email + tenant). Usa raw query para coincidir con los INSERT en paso 3. */
   private async findPartyForUser(user: { email: string; tenantId: string }): Promise<Party | null> {
-    const contact = await this.partyContactModel.findOne({
-      where: { tenantId: user.tenantId, kind: 'email', value: user.email.toLowerCase() },
+    const sequelize = this.partyModel.sequelize;
+    if (!sequelize) return null;
+    const email = user.email.toLowerCase();
+    const rows = await sequelize.query<{ party_id: string }>(
+      `SELECT party_id FROM party.party_contacts WHERE tenant_id = :tenantId AND kind = 'email' AND value = :email LIMIT 1`,
+      {
+        replacements: { tenantId: user.tenantId, email },
+        type: QueryTypes.SELECT,
+      },
+    );
+    const partyId = rows?.[0]?.party_id;
+    if (!partyId) return null;
+    const parties = await sequelize.query<{ id: string; tenant_id: string; type: string; display_name: string; legal_name: string | null; document_type: string | null; document_number: string | null; date_birth: string | null; status: string }>(
+      `SELECT id, tenant_id, type, display_name, legal_name, document_type, document_number, date_birth, status FROM party.parties WHERE id = :partyId AND tenant_id = :tenantId AND deleted_at IS NULL LIMIT 1`,
+      {
+        replacements: { partyId, tenantId: user.tenantId },
+        type: QueryTypes.SELECT,
+      },
+    );
+    const row = parties?.[0];
+    if (!row) return null;
+    const party = this.partyModel.build({
+      id: row.id,
+      tenantId: row.tenant_id,
+      type: row.type,
+      displayName: row.display_name,
+      legalName: row.legal_name,
+      documentType: row.document_type,
+      documentNumber: row.document_number,
+      dateBirth: row.date_birth,
+      status: row.status,
     });
-    if (!contact) return null;
-    return this.partyModel.findOne({
-      where: { id: contact.partyId, tenantId: user.tenantId },
-    });
+    return party;
   }
 
   /** Estado KYC del party del usuario actual (por userId/tenantId). Para uso en endpoints. */
@@ -546,13 +689,12 @@ export class AuthService {
     await this.oauthTokenRepository.revokeByAccessTokenId(accessTokenId);
   }
 
-  private issueAccessToken(userId: string, tenantId: string, accessTokenId: string): string {
+  private issueAccessToken(userId: string, tenantId: string, accessTokenId: string, partyId?: string): string {
     const secret = this.configService.get<string>('app.jwtSecret');
     const expiresIn = this.configService.get<string>('app.jwtExpiresIn') ?? '15m';
-    return this.jwtService.sign(
-      { sub: userId, tenantId, sessionId: accessTokenId },
-      { secret, expiresIn },
-    );
+    const payload: Record<string, string> = { sub: userId, tenantId, sessionId: accessTokenId };
+    if (partyId) payload.partyId = partyId;
+    return this.jwtService.sign(payload, { secret, expiresIn });
   }
 
   private generateRefreshToken(): string {
