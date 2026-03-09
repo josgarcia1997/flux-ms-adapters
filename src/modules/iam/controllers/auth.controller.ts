@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, Req, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req, BadRequestException, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthService, LoginResponse } from '../services/auth.service';
 import { LoginDto } from '../dto/login.dto';
@@ -93,9 +93,13 @@ export class AuthController {
   }
 
   @Post('refresh')
-  @ApiOperation({ summary: 'Refresh access token' })
+  @ApiOperation({ summary: 'Refresh access token. Body: refresh_token o refreshToken. No usa Authorization.' })
   async refresh(@Body() dto: RefreshTokenDto): Promise<LoginResponse> {
-    return this.authService.refresh(dto.refreshToken);
+    const token = dto.refresh_token ?? dto.refreshToken;
+    if (!token || typeof token !== 'string') {
+      throw new BadRequestException('refresh_token or refreshToken is required in body');
+    }
+    return this.authService.refresh(token);
   }
 
   @Post('logout')

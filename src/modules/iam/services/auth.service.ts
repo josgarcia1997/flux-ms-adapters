@@ -205,8 +205,8 @@ export class AuthService {
     if (!partyId) throw new BadRequestException('Could not create party.');
 
     await sequelize.query(
-      `INSERT INTO party.party_contacts (id, tenant_id, party_id, kind, value, is_primary, created_at, updated_at)
-       VALUES (gen_random_uuid(), :tenantId, :partyId, 'email', :email, true, :now, :now)`,
+      `INSERT INTO party.party_contacts (id, tenant_id, party_id, kind, label, value, is_primary, created_at, updated_at)
+       VALUES (gen_random_uuid(), :tenantId, :partyId, 'email', 'Initial', :email, true, :now, :now)`,
       {
         replacements: { tenantId, partyId, email, now },
         type: QueryTypes.RAW,
@@ -649,7 +649,9 @@ export class AuthService {
   }
 
   async refresh(refreshToken: string): Promise<LoginResponse> {
-    const hash = this.hashRefreshToken(refreshToken);
+    const token = typeof refreshToken === 'string' ? refreshToken.trim() : '';
+    if (!token) throw new UnauthorizedException('Invalid or expired refresh token');
+    const hash = this.hashRefreshToken(token);
     const found = await this.oauthTokenRepository.findByRefreshTokenHash(hash);
     if (!found) {
       throw new UnauthorizedException('Invalid or expired refresh token');
