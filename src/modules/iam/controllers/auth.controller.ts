@@ -57,10 +57,9 @@ export class AuthController {
   async registerKyc(@Body() dto: RegisterKycDto, @Req() req: RequestWithAuth) {
     const u = req.user;
     const userId = u && 'userId' in u ? u.userId : undefined;
-    const tenantId = u?.tenantId;
-    const partyId = u && 'partyId' in u ? u.partyId : undefined;
+    const tenantId = u && 'tenantId' in u ? u.tenantId : undefined;
     if (!userId || !tenantId) throw new UnauthorizedException('Missing user context');
-    return this.authService.registerKyc(userId, tenantId, dto, partyId);
+    return this.authService.registerKyc(userId, tenantId, dto);
   }
 
   @Get('countries')
