@@ -27,6 +27,9 @@ export class User extends Model {
   @Column(DataTypes.UUID)
   declare tenantId: string;
 
+  @Column({ type: DataTypes.UUID, allowNull: true })
+  declare partyId: string | null;
+
   @Column(DataTypes.STRING(190))
   declare email: string;
 
