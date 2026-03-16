@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { randomInt } from 'crypto';
-import { Injectable, UnauthorizedException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { UserRepository } from '../repository/user.repository';
@@ -49,6 +49,8 @@ export interface MeResponse {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly userRepository: UserRepository,
     private readonly oauthTokenRepository: OAuthTokenRepository,
@@ -470,6 +472,55 @@ export class AuthService {
         },
       );
     }
+
+    const kycLevelRows = await sequelize.query<{ level: string | null }>(
+      `SELECT level FROM party.kyc_cases WHERE party_id = :partyId AND tenant_id = :tenantId AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+      {
+        replacements: { partyId: party.id, tenantId },
+        type: QueryTypes.SELECT,
+      },
+    );
+    const kycLevel = kycLevelRows[0]?.level?.trim() || 'basic';
+    const ownerName = party.legalName?.trim() || '';
+
+    const baseOrchestrator = this.configService.get<string>('app.orchestratorUrl') ?? 'http://localhost:8080';
+    const onboardUrl =
+      this.configService.get<string>('app.walletLedgerUrl') ??
+      `${baseOrchestrator.replace(/\/$/, '')}/api/v1/wallet-ledger/onboard`;
+    const currency = dto.currency?.trim() || 'COP';
+    try {
+      const onboardRes = await fetch(onboardUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenant_id: tenantId,
+          party_id: party.id,
+          currency,
+          product_code: 'bank_acc',
+          kyc_level: kycLevel,
+          owner_name: ownerName,
+        }),
+      });
+      if (!onboardRes.ok) {
+        const text = await onboardRes.text();
+        this.logger.warn(`Wallet-ledger onboard failed: ${onboardRes.status} ${text}`);
+        throw new BadRequestException(
+          `Wallet-ledger onboarding failed (${onboardRes.status}): ${text || onboardRes.statusText}`,
+        );
+      }
+    } catch (err: any) {
+      if (err instanceof BadRequestException) throw err;
+      const cause = err?.cause?.message ?? err?.message ?? String(err);
+      this.logger.error(`Wallet-ledger onboard request failed: ${cause}`, err?.stack);
+      const hint =
+        onboardUrl.includes('localhost') && cause?.includes?.('fetch failed')
+          ? ' Si identity corre en Docker, usa ORCHESTRATOR_URL=http://host.docker.internal:8080 en .env para alcanzar el orquestador en el host.'
+          : '';
+      throw new BadRequestException(
+        `Wallet-ledger onboarding error: ${cause}. Comprueba que el orquestador esté en marcha y que ${onboardUrl} sea accesible.${hint}`,
+      );
+    }
+
     return { ok: true };
   }
 

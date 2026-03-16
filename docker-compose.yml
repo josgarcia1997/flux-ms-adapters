@@ -3,6 +3,8 @@ services:
     build: .
     ports:
       - "${PORT:-3000}:3000"
+    networks:
+      - flux-shared
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       PORT: 3000
@@ -16,6 +18,8 @@ services:
       DB_USERNAME: ${DB_USERNAME:-flux}
       DB_PASSWORD: ${DB_PASSWORD:-flux}
       DB_LOGGING: ${DB_LOGGING:-false}
+      # Orquestador: desde Docker use host.docker.internal; en local use localhost
+      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:-http://host.docker.internal:8080}
     restart: unless-stopped
 
   # Optional: only if you want a local Postgres (e.g. docker compose --profile db up -d)
@@ -36,6 +40,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+networks:
+  flux-shared:
+    external: true
 
 volumes:
   postgres_data:
