@@ -70,4 +70,10 @@ export class RegisterKycDto {
   @IsOptional()
   @MaxLength(255)
   extras?: string;
+
+  @ApiPropertyOptional({ description: 'Moneda para onboarding wallet-ledger (ej. COP)', maxLength: 10 })
+  @IsString()
+  @IsOptional()
+  @MaxLength(10)
+  currency?: string;
 }
