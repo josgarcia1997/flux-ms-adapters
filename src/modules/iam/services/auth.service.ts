@@ -45,6 +45,11 @@ export interface MeResponse {
   roles: string[];
   permissions: string[];
   scopes: string[];
+  wallets: Array<{
+    id: string;
+    name: string;
+    amount: string;
+  }>;
 }
 
 @Injectable()
@@ -703,6 +708,49 @@ export class AuthService {
       ],
     });
     if (!user) return null;
+
+    // Wallets (wallet.wallets + wallet.wallet_balances) viven en el mismo Postgres pero en otro esquema.
+    const wallets: Array<{ id: string; name: string; amount: string }> = [];
+    const partyId = user.partyId;
+    if (partyId) {
+      const sequelize = this.userModel.sequelize;
+      if (sequelize) {
+        const walletRows = await sequelize.query<{ id: string; name: string; amount: string }>(
+          `
+          SELECT
+            w.id,
+            COALESCE(
+              w.metadata_json->>'name',
+              w.metadata_json->>'wallet_name',
+              w.metadata_json->>'display_name',
+              w.id::text
+            ) AS name,
+            COALESCE(SUM(b.available), 0)::text AS amount
+          FROM wallet.wallets w
+          LEFT JOIN wallet.wallet_balances b
+            ON b.tenant_id = w.tenant_id
+           AND b.wallet_id = w.id
+          WHERE w.tenant_id = :tenantId
+            AND w.party_id = :partyId
+            AND w.status = 'active'
+          GROUP BY
+            w.id,
+            COALESCE(
+              w.metadata_json->>'name',
+              w.metadata_json->>'wallet_name',
+              w.metadata_json->>'display_name',
+              w.id::text
+            )
+          `,
+          {
+            replacements: { tenantId, partyId },
+            type: QueryTypes.SELECT,
+          },
+        );
+        wallets.push(...(walletRows ?? []));
+      }
+    }
+
     const roles = (user.roles ?? []).map((r: Role) => r.name).sort();
     const permissions = (user.roles ?? [])
       .flatMap((r: Role) => (r.permissions ?? []).map((p: Permission) => p.key))
@@ -721,6 +769,7 @@ export class AuthService {
       roles,
       permissions,
       scopes,
+      wallets,
     };
   }
 
