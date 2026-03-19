@@ -48,6 +48,7 @@ export interface MeResponse {
   wallets: Array<{
     id: string;
     name: string;
+    account_name: string;
     amount: string;
   }>;
 }
@@ -710,12 +711,17 @@ export class AuthService {
     if (!user) return null;
 
     // Wallets (wallet.wallets + wallet.wallet_balances) viven en el mismo Postgres pero en otro esquema.
-    const wallets: Array<{ id: string; name: string; amount: string }> = [];
+    const wallets: Array<{ id: string; name: string; account_name: string; amount: string }> = [];
     const partyId = user.partyId;
     if (partyId) {
       const sequelize = this.userModel.sequelize;
       if (sequelize) {
-        const walletRows = await sequelize.query<{ id: string; name: string; amount: string }>(
+        const walletRows = await sequelize.query<{
+          id: string;
+          name: string;
+          account_name: string;
+          amount: string;
+        }>(
           `
           SELECT
             w.id,
@@ -725,6 +731,15 @@ export class AuthService {
               w.metadata_json->>'display_name',
               w.id::text
             ) AS name,
+            COALESCE(
+              MAX(w.account_name),
+              COALESCE(
+                w.metadata_json->>'name',
+                w.metadata_json->>'wallet_name',
+                w.metadata_json->>'display_name',
+                w.id::text
+              )
+            ) AS account_name,
             COALESCE(SUM(b.available), 0)::text AS amount
           FROM wallet.wallets w
           LEFT JOIN wallet.wallet_balances b
