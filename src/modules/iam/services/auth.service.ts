@@ -788,6 +788,21 @@ export class AuthService {
     };
   }
 
+  async verifyPin(userId: string, pin: string): Promise<{ valid: boolean }> {
+    const user = await this.userRepository.findById(userId);
+    if (!user) {
+      throw new UnauthorizedException('Usuario no encontrado');
+    }
+    if (!user.pinHash) {
+      throw new UnauthorizedException('PIN no configurado. Complete el registro primero.');
+    }
+    const isMatch = await bcrypt.compare(pin, user.pinHash);
+    if (!isMatch) {
+      throw new UnauthorizedException('PIN incorrecto');
+    }
+    return { valid: true };
+  }
+
   async logout(accessTokenId: string): Promise<void> {
     await this.oauthTokenRepository.revokeByAccessTokenId(accessTokenId);
   }

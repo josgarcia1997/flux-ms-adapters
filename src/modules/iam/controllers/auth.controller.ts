@@ -7,6 +7,7 @@ import { RegisterConfirmDto } from '../dto/register-confirm.dto';
 import { RegisterProfileDto } from '../dto/register-profile.dto';
 import { RegisterKycDto } from '../dto/register-kyc.dto';
 import { RefreshTokenDto } from '../dto/refresh-token.dto';
+import { VerifyPinDto } from '../dto/verify-pin.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import type { RequestWithAuth } from '../../../common/guards/jwt-auth.guard';
 
@@ -99,6 +100,17 @@ export class AuthController {
       throw new BadRequestException('refresh_token or refreshToken is required in body');
     }
     return this.authService.refresh(token);
+  }
+
+  @Post('verify-pin')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Verify user PIN (4 digits) for payment confirmation' })
+  async verifyPin(@Body() dto: VerifyPinDto, @Req() req: RequestWithAuth): Promise<{ valid: boolean }> {
+    const u = req.user;
+    const userId = u && 'userId' in u ? u.userId : undefined;
+    if (!userId) throw new UnauthorizedException('Missing user context');
+    return this.authService.verifyPin(userId, dto.pin);
   }
 
   @Post('logout')
