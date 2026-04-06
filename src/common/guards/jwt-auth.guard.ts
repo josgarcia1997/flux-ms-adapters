@@ -11,7 +11,6 @@ export interface JwtPayload {
   sub: string;
   tenantId: string;
   sessionId?: string;
-  partyId?: string;
   reg?: boolean;
   email?: string;
   username?: string;
@@ -21,7 +20,7 @@ export interface JwtPayload {
 
 export interface RequestWithAuth extends Request {
   user?:
-    | { userId: string; tenantId: string; sessionId: string; partyId?: string }
+    | { userId: string; tenantId: string; sessionId: string }
     | { reg: true; email: string; username: string; tenantId: string };
 }
 
@@ -45,7 +44,6 @@ export class JwtAuthGuard implements CanActivate {
           userId: payload.sub,
           tenantId: payload.tenantId,
           sessionId: payload.sessionId,
-          partyId: payload.partyId,
         };
       } else {
         throw new UnauthorizedException('Invalid token payload');

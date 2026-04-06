@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
-import { Op } from 'sequelize';
+import { QueryTypes } from 'sequelize';
 import { OAuthAccessToken } from '../entities/oauth-access-token.entity';
 import { OAuthRefreshToken } from '../entities/oauth-refresh-token.entity';
 
@@ -28,7 +28,7 @@ export class OAuthTokenRepository {
   }
 
   /**
-   * Crea una fila en oauth_access_tokens y otra en oauth_refresh_tokens.
+   * Crea una fila en oauth_access_tokens y otra en oauth_refresh_tokens (tablas sin schema = public, como Laravel).
    * refreshTokenHash debe ser el hash (ej. SHA256 hex) del token que se devuelve al cliente.
    */
   async createTokenPair(
@@ -38,36 +38,46 @@ export class OAuthTokenRepository {
     clientId: number,
   ): Promise<CreateTokenPairResult> {
     const accessTokenId = this.generateAccessTokenId();
-    await this.accessTokenModel.create({
-      id: accessTokenId,
-      userId,
-      clientId,
-      name: null,
-      scopes: null,
-      revoked: false,
-      expiresAt: null,
-    } as any);
-    await this.refreshTokenModel.create({
-      id: refreshTokenHash,
-      accessTokenId,
-      revoked: false,
-      expiresAt: refreshExpiresAt,
-    } as any);
+    const sequelize = this.accessTokenModel.sequelize;
+    if (!sequelize) throw new Error('Sequelize not available');
+    await sequelize.query(
+      `INSERT INTO oauth_access_tokens (id, user_id, client_id, name, scopes, revoked, created_at, updated_at, expires_at)
+       VALUES (:id, :userId, :clientId, NULL, NULL, false, NOW(), NOW(), NULL)`,
+      {
+        replacements: { id: accessTokenId, userId, clientId },
+        type: QueryTypes.RAW,
+      },
+    );
+    await sequelize.query(
+      `INSERT INTO oauth_refresh_tokens (id, access_token_id, revoked, expires_at)
+       VALUES (:id, :accessTokenId, false, :expiresAt)`,
+      {
+        replacements: { id: refreshTokenHash, accessTokenId, expiresAt: refreshExpiresAt },
+        type: QueryTypes.RAW,
+      },
+    );
     return { accessTokenId };
   }
 
   /**
-   * Busca por hash del refresh token. Devuelve userId y accessTokenId si es válido (no revocado, no expirado).
+   * Busca por hash del refresh token usando SQL crudo (mismas tablas que Laravel: public.oauth_*).
    */
   async findByRefreshTokenHash(hash: string): Promise<FindByRefreshTokenHashResult | null> {
-    const refresh = await this.refreshTokenModel.findOne({
-      where: { id: hash, revoked: false, expiresAt: { [Op.gt]: new Date() } },
-      include: [{ model: OAuthAccessToken, as: 'accessToken', required: true }],
-    });
-    if (!refresh?.accessToken || (refresh.accessToken as OAuthAccessToken).revoked) return null;
-    const access = refresh.accessToken as OAuthAccessToken;
-    if (!access.userId) return null;
-    return { userId: access.userId, accessTokenId: access.id };
+    const sequelize = this.refreshTokenModel.sequelize;
+    if (!sequelize) return null;
+    const rows = await sequelize.query<{ user_id: string; access_token_id: string }>(
+      `SELECT a.user_id, r.access_token_id
+       FROM oauth_refresh_tokens r
+       INNER JOIN oauth_access_tokens a ON a.id = r.access_token_id
+       WHERE r.id = :hash AND r.revoked = false
+         AND (r.expires_at IS NULL OR r.expires_at > NOW())
+         AND a.revoked = false AND a.user_id IS NOT NULL
+       LIMIT 1`,
+      { replacements: { hash }, type: QueryTypes.SELECT },
+    );
+    const row = rows?.[0];
+    if (!row?.user_id || !row?.access_token_id) return null;
+    return { userId: row.user_id, accessTokenId: row.access_token_id };
   }
 
   /**

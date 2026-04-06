@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { randomInt } from 'crypto';
-import { Injectable, UnauthorizedException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { UserRepository } from '../repository/user.repository';
@@ -45,10 +45,18 @@ export interface MeResponse {
   roles: string[];
   permissions: string[];
   scopes: string[];
+  wallets: Array<{
+    id: string;
+    name: string;
+    account_name: string;
+    amount: string;
+  }>;
 }
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly userRepository: UserRepository,
     private readonly oauthTokenRepository: OAuthTokenRepository,
@@ -170,20 +178,11 @@ export class AuthService {
     const legalName = `${dto.firstName.trim()} ${dto.lastName.trim()}`;
     const displayName = regUser.username?.trim() || email;
 
-    const user = await this.userRepository.create({
-      tenantId,
-      email,
-      username: regUser.username,
-      passwordHash,
-      status: 'active',
-      pinHash,
-      termsAcceptedAt: dto.termsAccepted ? new Date() : null,
-    });
-
     const sequelize = this.partyModel.sequelize;
     if (!sequelize) throw new BadRequestException('Database connection not available');
     const now = new Date();
 
+    // Crear party primero para poder vincularlo en iam.users.party_id
     const partyRows = await sequelize.query<{ id: string }>(
       `INSERT INTO party.parties (tenant_id, type, display_name, legal_name, date_birth, document_type, document_number, status, created_at, updated_at)
        VALUES (:tenantId, 'person', :displayName, :legalName, :dateBirth, :documentType, :documentNumber, 'active', :now, :now)
@@ -204,9 +203,20 @@ export class AuthService {
     const partyId = partyRows?.[0]?.id;
     if (!partyId) throw new BadRequestException('Could not create party.');
 
+    const user = await this.userRepository.create({
+      tenantId,
+      partyId,
+      email,
+      username: regUser.username,
+      passwordHash,
+      status: 'active',
+      pinHash,
+      termsAcceptedAt: dto.termsAccepted ? new Date() : null,
+    });
+
     await sequelize.query(
-      `INSERT INTO party.party_contacts (id, tenant_id, party_id, kind, value, is_primary, created_at, updated_at)
-       VALUES (gen_random_uuid(), :tenantId, :partyId, 'email', :email, true, :now, :now)`,
+      `INSERT INTO party.party_contacts (id, tenant_id, party_id, kind, label, value, is_primary, created_at, updated_at)
+       VALUES (gen_random_uuid(), :tenantId, :partyId, 'email', 'Initial', :email, true, :now, :now)`,
       {
         replacements: { tenantId, partyId, email, now },
         type: QueryTypes.RAW,
@@ -273,7 +283,7 @@ export class AuthService {
       refreshExpiresAt,
       clientId,
     );
-    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId, partyId);
+    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId);
     const name = user.username ?? user.email;
     const expiresIn = this.configService.get<string>('app.jwtExpiresIn') ?? '15m';
     const expiresInSeconds = expiresIn === '15m' ? 900 : 3600;
@@ -384,17 +394,13 @@ export class AuthService {
     return { ok: true };
   }
 
-  /**
-   * Paso 4: KYC y dirección (party.addresses). Requiere JWT.
-   * El party se identifica por partyId en el token; si no viene, se resuelve el más reciente del usuario por email.
-   */
-  async registerKyc(userId: string, tenantId: string, dto: RegisterKycDto, partyIdFromToken?: string): Promise<{ ok: boolean }> {
+  /** Paso 4: KYC y dirección (party.addresses). El party se obtiene de iam.users.party_id. */
+  async registerKyc(userId: string, tenantId: string, dto: RegisterKycDto): Promise<{ ok: boolean }> {
     const user = await this.userRepository.findById(userId);
     if (!user || user.tenantId !== tenantId) {
       throw new UnauthorizedException('User not found');
     }
-    const partyIdToUse = partyIdFromToken ?? (await this.findOnePartyIdForUser(user));
-    const party = partyIdToUse ? await this.findPartyById(partyIdToUse, tenantId) : null;
+    const party = await this.findPartyForUser(user);
     if (!party) {
       throw new BadRequestException('Party not found. Complete registration first.');
     }
@@ -472,6 +478,55 @@ export class AuthService {
         },
       );
     }
+
+    const kycLevelRows = await sequelize.query<{ level: string | null }>(
+      `SELECT level FROM party.kyc_cases WHERE party_id = :partyId AND tenant_id = :tenantId AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+      {
+        replacements: { partyId: party.id, tenantId },
+        type: QueryTypes.SELECT,
+      },
+    );
+    const kycLevel = kycLevelRows[0]?.level?.trim() || 'basic';
+    const ownerName = party.legalName?.trim() || '';
+
+    const baseOrchestrator = this.configService.get<string>('app.orchestratorUrl') ?? 'http://localhost:8080';
+    const onboardUrl =
+      this.configService.get<string>('app.walletLedgerUrl') ??
+      `${baseOrchestrator.replace(/\/$/, '')}/api/v1/wallet-ledger/onboard`;
+    const currency = dto.currency?.trim() || 'COP';
+    try {
+      const onboardRes = await fetch(onboardUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenant_id: tenantId,
+          party_id: party.id,
+          currency,
+          product_code: 'bank_acc',
+          kyc_level: kycLevel,
+          owner_name: ownerName,
+        }),
+      });
+      if (!onboardRes.ok) {
+        const text = await onboardRes.text();
+        this.logger.warn(`Wallet-ledger onboard failed: ${onboardRes.status} ${text}`);
+        throw new BadRequestException(
+          `Wallet-ledger onboarding failed (${onboardRes.status}): ${text || onboardRes.statusText}`,
+        );
+      }
+    } catch (err: any) {
+      if (err instanceof BadRequestException) throw err;
+      const cause = err?.cause?.message ?? err?.message ?? String(err);
+      this.logger.error(`Wallet-ledger onboard request failed: ${cause}`, err?.stack);
+      const hint =
+        onboardUrl.includes('localhost') && cause?.includes?.('fetch failed')
+          ? ' Si identity corre en Docker, usa ORCHESTRATOR_URL=http://host.docker.internal:8080 en .env para alcanzar el orquestador en el host.'
+          : '';
+      throw new BadRequestException(
+        `Wallet-ledger onboarding error: ${cause}. Comprueba que el orquestador esté en marcha y que ${onboardUrl} sea accesible.${hint}`,
+      );
+    }
+
     return { ok: true };
   }
 
@@ -535,56 +590,10 @@ export class AuthService {
     });
   }
 
-  /** Devuelve un party_id para el usuario cuando hay varios (el más reciente por created_at). Para poner en JWT en login/refresh. */
-  private async findOnePartyIdForUser(user: { email: string; tenantId: string }): Promise<string | null> {
-    const sequelize = this.partyModel.sequelize;
-    if (!sequelize) return null;
-    const email = user.email.toLowerCase();
-    const rows = await sequelize.query<{ party_id: string }>(
-      `SELECT pc.party_id FROM party.party_contacts pc
-       INNER JOIN party.parties p ON p.id = pc.party_id AND p.tenant_id = pc.tenant_id AND p.deleted_at IS NULL
-       WHERE pc.tenant_id = :tenantId AND pc.kind = 'email' AND pc.value = :email
-       ORDER BY p.created_at DESC LIMIT 1`,
-      { replacements: { tenantId: user.tenantId, email }, type: QueryTypes.SELECT },
-    );
-    return rows?.[0]?.party_id ?? null;
-  }
-
-  /** Resolve party for user via party_contacts (email + tenant). Usa raw query para coincidir con los INSERT en paso 3. */
-  private async findPartyForUser(user: { email: string; tenantId: string }): Promise<Party | null> {
-    const sequelize = this.partyModel.sequelize;
-    if (!sequelize) return null;
-    const email = user.email.toLowerCase();
-    const rows = await sequelize.query<{ party_id: string }>(
-      `SELECT party_id FROM party.party_contacts WHERE tenant_id = :tenantId AND kind = 'email' AND value = :email LIMIT 1`,
-      {
-        replacements: { tenantId: user.tenantId, email },
-        type: QueryTypes.SELECT,
-      },
-    );
-    const partyId = rows?.[0]?.party_id;
-    if (!partyId) return null;
-    const parties = await sequelize.query<{ id: string; tenant_id: string; type: string; display_name: string; legal_name: string | null; document_type: string | null; document_number: string | null; date_birth: string | null; status: string }>(
-      `SELECT id, tenant_id, type, display_name, legal_name, document_type, document_number, date_birth, status FROM party.parties WHERE id = :partyId AND tenant_id = :tenantId AND deleted_at IS NULL LIMIT 1`,
-      {
-        replacements: { partyId, tenantId: user.tenantId },
-        type: QueryTypes.SELECT,
-      },
-    );
-    const row = parties?.[0];
-    if (!row) return null;
-    const party = this.partyModel.build({
-      id: row.id,
-      tenantId: row.tenant_id,
-      type: row.type,
-      displayName: row.display_name,
-      legalName: row.legal_name,
-      documentType: row.document_type,
-      documentNumber: row.document_number,
-      dateBirth: row.date_birth,
-      status: row.status,
-    });
-    return party;
+  /** Resolve party del usuario solo por iam.users.party_id. */
+  private async findPartyForUser(user: { partyId?: string | null; tenantId: string }): Promise<Party | null> {
+    if (!user.partyId) return null;
+    return this.findPartyById(user.partyId, user.tenantId);
   }
 
   /** Estado KYC del party del usuario actual (por userId/tenantId). Para uso en endpoints. */
@@ -632,8 +641,7 @@ export class AuthService {
       refreshExpiresAt,
       clientId,
     );
-    const partyId = await this.findOnePartyIdForUser(user);
-    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId, partyId ?? undefined);
+    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId);
     const name = user.username ?? user.email;
     const expiresIn = this.configService.get<string>('app.jwtExpiresIn') ?? '15m';
     const expiresInSeconds = expiresIn === '15m' ? 900 : 3600;
@@ -649,7 +657,9 @@ export class AuthService {
   }
 
   async refresh(refreshToken: string): Promise<LoginResponse> {
-    const hash = this.hashRefreshToken(refreshToken);
+    const token = typeof refreshToken === 'string' ? refreshToken.trim() : '';
+    if (!token) throw new UnauthorizedException('Invalid or expired refresh token');
+    const hash = this.hashRefreshToken(token);
     const found = await this.oauthTokenRepository.findByRefreshTokenHash(hash);
     if (!found) {
       throw new UnauthorizedException('Invalid or expired refresh token');
@@ -669,8 +679,7 @@ export class AuthService {
       refreshExpiresAt,
       clientId,
     );
-    const partyId = await this.findOnePartyIdForUser(user);
-    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId, partyId ?? undefined);
+    const access_token = this.issueAccessToken(user.id, tenantId, accessTokenId);
     const name = user.username ?? user.email;
     const expiresIn = this.configService.get<string>('app.jwtExpiresIn') ?? '15m';
     const expiresInSeconds = expiresIn === '15m' ? 900 : 3600;
@@ -700,6 +709,63 @@ export class AuthService {
       ],
     });
     if (!user) return null;
+
+    // Wallets (wallet.wallets + wallet.wallet_balances) viven en el mismo Postgres pero en otro esquema.
+    const wallets: Array<{ id: string; name: string; account_name: string; amount: string }> = [];
+    const partyId = user.partyId;
+    if (partyId) {
+      const sequelize = this.userModel.sequelize;
+      if (sequelize) {
+        const walletRows = await sequelize.query<{
+          id: string;
+          name: string;
+          account_name: string;
+          amount: string;
+        }>(
+          `
+          SELECT
+            w.id,
+            COALESCE(
+              w.metadata_json->>'name',
+              w.metadata_json->>'wallet_name',
+              w.metadata_json->>'display_name',
+              w.id::text
+            ) AS name,
+            COALESCE(
+              MAX(w.account_name),
+              COALESCE(
+                w.metadata_json->>'name',
+                w.metadata_json->>'wallet_name',
+                w.metadata_json->>'display_name',
+                w.id::text
+              )
+            ) AS account_name,
+            COALESCE(SUM(b.available), 0)::text AS amount
+          FROM wallet.wallets w
+          LEFT JOIN wallet.wallet_balances b
+            ON b.tenant_id = w.tenant_id
+           AND b.wallet_id = w.id
+          WHERE w.tenant_id = :tenantId
+            AND w.party_id = :partyId
+            AND w.status = 'active'
+          GROUP BY
+            w.id,
+            COALESCE(
+              w.metadata_json->>'name',
+              w.metadata_json->>'wallet_name',
+              w.metadata_json->>'display_name',
+              w.id::text
+            )
+          `,
+          {
+            replacements: { tenantId, partyId },
+            type: QueryTypes.SELECT,
+          },
+        );
+        wallets.push(...(walletRows ?? []));
+      }
+    }
+
     const roles = (user.roles ?? []).map((r: Role) => r.name).sort();
     const permissions = (user.roles ?? [])
       .flatMap((r: Role) => (r.permissions ?? []).map((p: Permission) => p.key))
@@ -718,18 +784,33 @@ export class AuthService {
       roles,
       permissions,
       scopes,
+      wallets,
     };
+  }
+
+  async verifyPin(userId: string, pin: string): Promise<{ valid: boolean }> {
+    const user = await this.userRepository.findById(userId);
+    if (!user) {
+      throw new UnauthorizedException('Usuario no encontrado');
+    }
+    if (!user.pinHash) {
+      throw new UnauthorizedException('PIN no configurado. Complete el registro primero.');
+    }
+    const isMatch = await bcrypt.compare(pin, user.pinHash);
+    if (!isMatch) {
+      throw new UnauthorizedException('PIN incorrecto');
+    }
+    return { valid: true };
   }
 
   async logout(accessTokenId: string): Promise<void> {
     await this.oauthTokenRepository.revokeByAccessTokenId(accessTokenId);
   }
 
-  private issueAccessToken(userId: string, tenantId: string, accessTokenId: string, partyId?: string): string {
+  private issueAccessToken(userId: string, tenantId: string, accessTokenId: string): string {
     const secret = this.configService.get<string>('app.jwtSecret');
     const expiresIn = this.configService.get<string>('app.jwtExpiresIn') ?? '15m';
     const payload: Record<string, string> = { sub: userId, tenantId, sessionId: accessTokenId };
-    if (partyId) payload.partyId = partyId;
     return this.jwtService.sign(payload, { secret, expiresIn });
   }
 
