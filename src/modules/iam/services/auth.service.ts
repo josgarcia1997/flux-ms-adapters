@@ -11,7 +11,6 @@ import { RegisterConfirmDto } from '../dto/register-confirm.dto';
 import { RegisterProfileDto } from '../dto/register-profile.dto';
 import { RegisterKycDto } from '../dto/register-kyc.dto';
 import * as bcrypt from 'bcryptjs';
-import { TenantContextService } from '../../../common/services/tenant-context.service';
 import { InjectModel } from '@nestjs/sequelize';
 import { QueryTypes } from 'sequelize';
 import { User as UserModel } from '../entities/user.entity';
@@ -60,7 +59,6 @@ export class AuthService {
   constructor(
     private readonly userRepository: UserRepository,
     private readonly oauthTokenRepository: OAuthTokenRepository,
-    private readonly tenantContext: TenantContextService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     @InjectModel(UserModel)
@@ -88,7 +86,7 @@ export class AuthService {
 
   /** Paso 1: solicitar código OTP por correo (usa tabla password_resets, igual que Laravel forgot-password). */
   async registerRequest(dto: RegisterRequestDto): Promise<{ message: string }> {
-    const tenantId = this.tenantContext.getTenantId();
+    const tenantId = dto.tenant_id;
     const email = dto.email.toLowerCase();
     const existing = await this.userRepository.findByEmail(email, tenantId);
     if (existing) {
@@ -118,7 +116,7 @@ export class AuthService {
 
   /** Paso 2: validar OTP y devolver registration token. No crea usuario ni party; todo se crea en paso 3. */
   async registerConfirm(dto: RegisterConfirmDto): Promise<{ registrationToken: string; expiresIn: number }> {
-    const tenantId = this.tenantContext.getTenantId();
+    const tenantId = dto.tenant_id;
     const email = dto.email.toLowerCase();
     const row = await this.passwordResetModel.findOne({ where: { email } });
     if (!row) {
@@ -621,7 +619,7 @@ export class AuthService {
   }
 
   async login(dto: LoginDto, ip?: string, userAgent?: string): Promise<LoginResponse> {
-    const tenantId = this.tenantContext.getTenantId();
+    const tenantId = dto.tenant_id;
     const user = await this.userRepository.findByEmail(dto.email, tenantId);
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
@@ -656,7 +654,7 @@ export class AuthService {
     };
   }
 
-  async refresh(refreshToken: string): Promise<LoginResponse> {
+  async refresh(refreshToken: string, tenantId: string): Promise<LoginResponse> {
     const token = typeof refreshToken === 'string' ? refreshToken.trim() : '';
     if (!token) throw new UnauthorizedException('Invalid or expired refresh token');
     const hash = this.hashRefreshToken(token);
@@ -665,9 +663,8 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
     await this.oauthTokenRepository.revokeByAccessTokenId(found.accessTokenId);
-    const tenantId = this.tenantContext.getTenantId();
     const user = await this.userRepository.findById(found.userId);
-    if (!user || user.status !== 'active') {
+    if (!user || user.status !== 'active' || user.tenantId !== tenantId) {
       throw new UnauthorizedException('Invalid credentials');
     }
     const newRefreshToken = this.generateRefreshToken();

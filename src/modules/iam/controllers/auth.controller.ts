@@ -99,7 +99,7 @@ export class AuthController {
     if (!token || typeof token !== 'string') {
       throw new BadRequestException('refresh_token or refreshToken is required in body');
     }
-    return this.authService.refresh(token);
+    return this.authService.refresh(token, dto.tenant_id);
   }
 
   @Post('verify-pin')

@@ -1,7 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsNotEmpty, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
 
 export class RegisterRequestDto {
+  @ApiProperty({ description: 'Tenant ID para el registro', format: 'uuid' })
+  @IsUUID()
+  @IsNotEmpty()
+  tenant_id: string;
+
   @ApiProperty({ maxLength: 120 })
   @IsString()
   @IsNotEmpty()
