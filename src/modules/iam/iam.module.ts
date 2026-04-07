@@ -23,7 +23,6 @@ import {
 } from './entities';
 import { UserRepository } from './repository/user.repository';
 import { OAuthTokenRepository } from './repository/oauth-token.repository';
-import { TenantContextService } from '../../common/services/tenant-context.service';
 import { AuthService } from './services/auth.service';
 import { OutboxService } from './services/outbox.service';
 import { AuthController } from './controllers/auth.controller';
@@ -64,7 +63,6 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
   ],
   controllers: [AuthController, MeController],
   providers: [
-    TenantContextService,
     JwtAuthGuard,
     UserRepository,
     OAuthTokenRepository,

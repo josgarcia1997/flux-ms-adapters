@@ -1,7 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsNotEmpty, IsString, Length, MaxLength, MinLength } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, IsUUID, Length, MaxLength, MinLength } from 'class-validator';
 
 export class RegisterConfirmDto {
+  @ApiProperty({ description: 'Tenant ID del proceso de registro', format: 'uuid' })
+  @IsUUID()
+  @IsNotEmpty()
+  tenant_id: string;
+
   @ApiProperty()
   @IsEmail()
   @IsNotEmpty()
