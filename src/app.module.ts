@@ -38,7 +38,11 @@ const envPaths = ['.env', join(process.cwd(), '.env'), join(__dirname, '..', '.e
     }),
     IamModule,
   ],
+  ssl: {
+    require: true,
+    rejectUnauthorized: false,
+  },
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule {}
+export class AppModule { }
