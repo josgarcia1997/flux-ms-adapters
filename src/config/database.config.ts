@@ -15,4 +15,7 @@ export default registerAs('database', () => ({
   logging: process.env.DB_LOGGING === 'true',
   autoLoadModels: true,
   synchronize: false, // Tables/schemas created by Laravel migrations
+  ssl: {
+    rejectUnauthorized: false,
+  },
 }));
