@@ -49,7 +49,7 @@ jobs:
         with:
           args: -Dsonar.qualitygate.wait=true
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN_LARAVEL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN}}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
   docker-lint:
