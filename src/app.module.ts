@@ -24,24 +24,15 @@ const envPaths = ['.env', join(process.cwd(), '.env'), join(__dirname, '..', '.e
       useFactory: (configService: ConfigService) => {
         const db = configService.get('database');
         return {
-          host: db?.host ?? 'localhost',
-          port: db?.port ?? 5432,
-          username: db?.username ?? 'postgres',
-          password: db?.password ?? '',
-          database: db?.database ?? 'flux',
+          ...db,
           dialect: 'postgres',
-          logging: db?.logging ?? false,
           autoLoadModels: true,
-          synchronize: false, // Tables/schemas created by Laravel migrations
+          synchronize: false,
         };
       },
     }),
     IamModule,
   ],
-  ssl: {
-    require: true,
-    rejectUnauthorized: false,
-  },
   controllers: [AppController],
   providers: [AppService],
 })

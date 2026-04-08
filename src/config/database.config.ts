@@ -11,11 +11,11 @@ export default registerAs('database', () => ({
   username: process.env.DB_USERNAME ?? 'flux',
   password: process.env.DB_PASSWORD ?? '',
   database: process.env.DB_DATABASE ?? 'flux',
-  dialect: 'postgres' as const,
   logging: process.env.DB_LOGGING === 'true',
-  autoLoadModels: true,
-  synchronize: false, // Tables/schemas created by Laravel migrations
-  ssl: {
-    rejectUnauthorized: false,
+  dialectOptions: {
+    ssl: {
+      require: process.env.DB_SSL === 'true',
+      rejectUnauthorized: false,
+    },
   },
 }));
