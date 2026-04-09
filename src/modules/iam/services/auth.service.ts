@@ -182,8 +182,8 @@ export class AuthService {
 
     // Crear party primero para poder vincularlo en iam.users.party_id
     const partyRows = await sequelize.query<{ id: string }>(
-      `INSERT INTO party.parties (tenant_id, type, display_name, legal_name, date_birth, document_type, document_number, status, created_at, updated_at)
-       VALUES (:tenantId, 'person', :displayName, :legalName, :dateBirth, :documentType, :documentNumber, 'active', :now, :now)
+      `INSERT INTO party.parties (id, tenant_id, type, display_name, legal_name, date_birth, document_type, document_number, status, created_at, updated_at)
+       VALUES (gen_random_uuid(), :tenantId, 'person', :displayName, :legalName, :dateBirth, :documentType, :documentNumber, 'active', :now, :now)
        RETURNING id`,
       {
         replacements: {
