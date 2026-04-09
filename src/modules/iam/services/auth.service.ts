@@ -505,11 +505,48 @@ export class AuthService {
           owner_name: ownerName,
         }),
       });
+      const onboardText = await onboardRes.text();
+      let onboardJson: Record<string, any> | null = null;
+      try {
+        onboardJson = onboardText ? JSON.parse(onboardText) : null;
+      } catch {
+        onboardJson = null;
+      }
       if (!onboardRes.ok) {
-        const text = await onboardRes.text();
-        this.logger.warn(`Wallet-ledger onboard failed: ${onboardRes.status} ${text}`);
+        this.logger.warn(`Wallet-ledger onboard failed: ${onboardRes.status} ${onboardText}`);
         throw new BadRequestException(
-          `Wallet-ledger onboarding failed (${onboardRes.status}): ${text || onboardRes.statusText}`,
+          `Wallet-ledger onboarding failed (${onboardRes.status}): ${onboardText || onboardRes.statusText}`,
+        );
+      }
+
+      // Si el microservicio responde 200 pero explicita fallo funcional, no continuar en silencio.
+      if (onboardJson && onboardJson.success === false) {
+        const message = String(onboardJson.message ?? 'Wallet-ledger onboarding returned success=false');
+        this.logger.warn(`Wallet-ledger onboard functional failure: ${message}`);
+        throw new BadRequestException(`Wallet-ledger onboarding failed: ${message}`);
+      }
+
+      // Verificación defensiva: debe existir al menos una wallet activa del party tras onboarding.
+      const walletRows = await sequelize.query<{ wallet_id: string }>(
+        `SELECT id AS wallet_id
+           FROM wallet.wallets
+          WHERE tenant_id = :tenantId
+            AND party_id = :partyId
+            AND status = 'active'
+          ORDER BY created_at DESC
+          LIMIT 1`,
+        {
+          replacements: { tenantId, partyId: party.id },
+          type: QueryTypes.SELECT,
+        },
+      );
+
+      if (!walletRows?.[0]?.wallet_id) {
+        this.logger.warn(
+          `Wallet-ledger onboard returned ${onboardRes.status} but no active wallet found for tenant=${tenantId} party=${party.id}. Body=${onboardText}`,
+        );
+        throw new BadRequestException(
+          'Wallet-ledger onboarding completed without creating an active wallet. Check wallet-ledger service logs.',
         );
       }
     } catch (err: any) {
