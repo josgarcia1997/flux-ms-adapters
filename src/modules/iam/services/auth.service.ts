@@ -38,6 +38,7 @@ export interface LoginResponse {
 export interface MeResponse {
   id: string;
   tenant_id: string;
+  party_id: string | null;
   name: string;
   email: string;
   status: string;
@@ -812,6 +813,7 @@ export class AuthService {
     return {
       id: userId,
       tenant_id: tenantId,
+      party_id: user.partyId ?? null,
       name: user.username ?? user.email,
       email: user.email,
       status: user.status,
