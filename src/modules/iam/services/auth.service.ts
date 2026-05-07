@@ -53,6 +53,13 @@ export interface MeResponse {
   }>;
 }
 
+interface RegistrationTokenUser {
+  email: string;
+  username: string;
+  tenantId: string;
+  phoneNumber: string;
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -89,37 +96,45 @@ export class AuthService {
   async registerRequest(dto: RegisterRequestDto): Promise<{ message: string }> {
     const tenantId = dto.tenant_id;
     const email = dto.email.toLowerCase();
+    const phoneNumber = dto.phone_number.trim();
     const existing = await this.userRepository.findByEmail(email, tenantId);
     if (existing) {
       throw new ConflictException('The email has already been taken.');
     }
+    const existingPhone = await this.userRepository.findByPhoneNumber(phoneNumber, tenantId);
+    if (existingPhone) {
+      throw new ConflictException('The phone number has already been taken for this tenant.');
+    }
     const otp = String(randomInt(100000, 999999));
     const token = await bcrypt.hash(otp, 10);
-    const row = await this.passwordResetModel.findOne({ where: { email } });
+    const otpKey = this.registrationOtpKey(tenantId, phoneNumber);
+    const row = await this.passwordResetModel.findOne({ where: { email: otpKey } });
     if (row) {
       await row.update({ token });
     } else {
-      await this.passwordResetModel.create({ email, token } as any);
+      await this.passwordResetModel.create({ email: otpKey, token } as any);
     }
     await this.outboxService.enqueue({
       tenantId,
       eventName: 'RegistrationOtpRequested',
       payload: {
         email,
+        phone_number: phoneNumber,
         otp,
         tenant_id: tenantId,
         username: dto.username,
         occurred_at: new Date().toISOString(),
       },
     });
-    return { message: 'Code sent to your email. Check your inbox and confirm registration.' };
+    return { message: 'Code sent to your phone number. Check your SMS/WhatsApp and confirm registration.' };
   }
 
   /** Paso 2: validar OTP y devolver registration token. No crea usuario ni party; todo se crea en paso 3. */
   async registerConfirm(dto: RegisterConfirmDto): Promise<{ registrationToken: string; expiresIn: number }> {
     const tenantId = dto.tenant_id;
-    const email = dto.email.toLowerCase();
-    const row = await this.passwordResetModel.findOne({ where: { email } });
+    const phoneNumber = dto.phone_number.trim();
+    const otpKey = this.registrationOtpKey(tenantId, phoneNumber);
+    const row = await this.passwordResetModel.findOne({ where: { email: otpKey } });
     if (!row) {
       throw new BadRequestException('Code not found or expired. Please request a new one.');
     }
@@ -133,13 +148,13 @@ export class AuthService {
     if (!valid) {
       throw new BadRequestException('Invalid code.');
     }
-    const existing = await this.userRepository.findByEmail(email, tenantId);
-    if (existing) {
+    const existingPhone = await this.userRepository.findByPhoneNumber(phoneNumber, tenantId);
+    if (existingPhone) {
       await row.destroy();
-      throw new ConflictException('The email has already been taken.');
+      throw new ConflictException('The phone number has already been taken for this tenant.');
     }
     await row.destroy();
-    const registrationToken = this.issueRegistrationToken(email, dto.username, tenantId);
+    const registrationToken = this.issueRegistrationToken(dto.email.toLowerCase(), dto.username, tenantId, phoneNumber);
     return { registrationToken, expiresIn: 900 };
   }
 
@@ -148,7 +163,7 @@ export class AuthService {
    * Requiere dto.password. Usar el token devuelto por registerConfirm en Authorization: Bearer <registrationToken>.
    */
   async completeRegistration(
-    regUser: { email: string; username: string; tenantId: string },
+    regUser: RegistrationTokenUser,
     dto: RegisterProfileDto,
     ip?: string,
     userAgent?: string,
@@ -158,9 +173,14 @@ export class AuthService {
     }
     const tenantId = regUser.tenantId;
     const email = regUser.email.toLowerCase();
+    const phoneNumber = regUser.phoneNumber.trim();
     const existing = await this.userRepository.findByEmail(email, tenantId);
     if (existing) {
       throw new ConflictException('The email has already been taken.');
+    }
+    const existingPhone = await this.userRepository.findByPhoneNumber(phoneNumber, tenantId);
+    if (existingPhone) {
+      throw new ConflictException('The phone number has already been taken for this tenant.');
     }
     const country = await this.countryModel.findOne({ where: { id: dto.countryId, status: true } });
     if (!country) {
@@ -206,6 +226,7 @@ export class AuthService {
       tenantId,
       partyId,
       email,
+      phoneNumber,
       username: regUser.username,
       passwordHash,
       status: 'active',
@@ -297,12 +318,16 @@ export class AuthService {
     };
   }
 
-  private issueRegistrationToken(email: string, username: string, tenantId: string): string {
+  private issueRegistrationToken(email: string, username: string, tenantId: string, phoneNumber: string): string {
     const secret = this.configService.get<string>('app.jwtSecret');
     return this.jwtService.sign(
-      { reg: true, email, username, tenantId, sub: email },
+      { reg: true, email, username, tenantId, phoneNumber, sub: email },
       { secret, expiresIn: '15m' },
     );
+  }
+
+  private registrationOtpKey(tenantId: string, phoneNumber: string): string {
+    return `${tenantId}:${phoneNumber}`;
   }
 
   /** Step 3: complete profile (names, document, PIN, T&C). Actualiza el party creado en paso 2 (no crea uno nuevo). */
@@ -658,7 +683,8 @@ export class AuthService {
 
   async login(dto: LoginDto, ip?: string, userAgent?: string): Promise<LoginResponse> {
     const tenantId = dto.tenant_id;
-    const user = await this.userRepository.findByEmail(dto.email, tenantId);
+    const phoneNumber = dto.phone_number.trim();
+    const user = await this.userRepository.findByPhoneNumber(phoneNumber, tenantId);
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
     }

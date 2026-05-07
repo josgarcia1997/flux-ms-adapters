@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsNotEmpty, IsString, IsUUID, Length, MaxLength, MinLength } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, IsUUID, Length, Matches, MaxLength, MinLength } from 'class-validator';
 
 export class RegisterConfirmDto {
   @ApiProperty({ description: 'Tenant ID del proceso de registro', format: 'uuid' })
@@ -7,12 +7,18 @@ export class RegisterConfirmDto {
   @IsNotEmpty()
   tenant_id: string;
 
-  @ApiProperty()
+  @ApiProperty({ example: '+573001234567', description: 'Número celular en formato E.164' })
+  @IsString()
+  @IsNotEmpty()
+  @Matches(/^\+[1-9]\d{7,14}$/, { message: 'phone_number must be in E.164 format (e.g. +573001234567)' })
+  phone_number: string;
+
+  @ApiProperty({ example: 'user@example.com' })
   @IsEmail()
   @IsNotEmpty()
   email: string;
 
-  @ApiProperty({ description: '6-digit OTP from email', example: '123456' })
+  @ApiProperty({ description: '6-digit OTP from SMS/WhatsApp', example: '123456' })
   @IsString()
   @Length(6, 6, { message: 'The OTP code must be 6 digits' })
   otp: string;

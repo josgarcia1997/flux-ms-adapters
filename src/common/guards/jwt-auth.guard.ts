@@ -14,6 +14,7 @@ export interface JwtPayload {
   reg?: boolean;
   email?: string;
   username?: string;
+  phoneNumber?: string;
   iat?: number;
   exp?: number;
 }
@@ -21,7 +22,7 @@ export interface JwtPayload {
 export interface RequestWithAuth extends Request {
   user?:
     | { userId: string; tenantId: string; sessionId: string }
-    | { reg: true; email: string; username: string; tenantId: string };
+    | { reg: true; email: string; username: string; tenantId: string; phoneNumber: string };
 }
 
 @Injectable()
@@ -37,8 +38,14 @@ export class JwtAuthGuard implements CanActivate {
     const token = auth.slice(7);
     try {
       const payload = this.jwtService.verify<JwtPayload>(token);
-      if (payload.reg === true && payload.email != null && payload.username != null && payload.tenantId) {
-        request.user = { reg: true, email: payload.email, username: payload.username, tenantId: payload.tenantId };
+      if (payload.reg === true && payload.email != null && payload.username != null && payload.tenantId && payload.phoneNumber != null) {
+        request.user = {
+          reg: true,
+          email: payload.email,
+          username: payload.username,
+          tenantId: payload.tenantId,
+          phoneNumber: payload.phoneNumber,
+        };
       } else if (payload.sub && payload.tenantId && payload.sessionId) {
         request.user = {
           userId: payload.sub,

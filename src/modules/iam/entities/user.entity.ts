@@ -33,6 +33,9 @@ export class User extends Model {
   @Column(DataTypes.STRING(190))
   declare email: string;
 
+  @Column({ type: DataTypes.STRING(20), allowNull: true })
+  declare phoneNumber: string | null;
+
   @Column({ type: DataTypes.STRING(80), allowNull: true })
   declare username: string | null;
 

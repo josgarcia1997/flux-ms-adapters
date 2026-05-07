@@ -38,7 +38,7 @@ export class AuthController {
       const ip = req.ip;
       const userAgent = req.get?.('user-agent');
       return this.authService.completeRegistration(
-        { email: u.email, username: u.username, tenantId: u.tenantId },
+        { email: u.email, username: u.username, tenantId: u.tenantId, phoneNumber: u.phoneNumber },
         dto,
         ip,
         userAgent,

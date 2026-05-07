@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsNotEmpty, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, IsUUID, Matches, MaxLength, MinLength } from 'class-validator';
 
 export class RegisterRequestDto {
   @ApiProperty({ description: 'Tenant ID para el registro', format: 'uuid' })
@@ -17,6 +17,12 @@ export class RegisterRequestDto {
   @IsEmail()
   @IsNotEmpty()
   email: string;
+
+  @ApiProperty({ example: '+573001234567', description: 'Número celular en formato E.164' })
+  @IsString()
+  @IsNotEmpty()
+  @Matches(/^\+[1-9]\d{7,14}$/, { message: 'phone_number must be in E.164 format (e.g. +573001234567)' })
+  phone_number: string;
 
   @ApiProperty({ minLength: 12 })
   @IsString()
