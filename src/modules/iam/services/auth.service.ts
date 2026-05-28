@@ -89,9 +89,17 @@ export class AuthService {
   async registerRequest(dto: RegisterRequestDto): Promise<{ message: string }> {
     const tenantId = dto.tenant_id;
     const email = dto.email.toLowerCase();
+    const username = dto.username.trim();
     const existing = await this.userRepository.findByEmail(email, tenantId);
     if (existing) {
       throw new ConflictException('The email has already been taken.');
+    }
+    const existingUsername = await this.userRepository.findByUsername(
+      username,
+      tenantId,
+    );
+    if (existingUsername) {
+      throw new ConflictException('The username has already been taken.');
     }
     const otp = String(randomInt(100000, 999999));
     const token = await bcrypt.hash(otp, 10);
@@ -108,7 +116,7 @@ export class AuthService {
         email,
         otp,
         tenant_id: tenantId,
-        username: dto.username,
+        username,
         occurred_at: new Date().toISOString(),
       },
     });
@@ -162,6 +170,16 @@ export class AuthService {
     if (existing) {
       throw new ConflictException('The email has already been taken.');
     }
+    const username = regUser.username?.trim() ?? '';
+    if (username !== '') {
+      const existingUsername = await this.userRepository.findByUsername(
+        username,
+        tenantId,
+      );
+      if (existingUsername) {
+        throw new ConflictException('The username has already been taken.');
+      }
+    }
     const country = await this.countryModel.findOne({ where: { id: dto.countryId, status: true } });
     if (!country) {
       throw new BadRequestException('Invalid country.');
@@ -206,7 +224,7 @@ export class AuthService {
       tenantId,
       partyId,
       email,
-      username: regUser.username,
+      username: username !== '' ? username : null,
       passwordHash,
       status: 'active',
       pinHash,

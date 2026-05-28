@@ -17,6 +17,10 @@ export class UserRepository {
     return this.userModel.findOne({ where: { email, tenantId } });
   }
 
+  async findByUsername(username: string, tenantId: string): Promise<User | null> {
+    return this.userModel.findOne({ where: { username, tenantId } });
+  }
+
   async create(data: Partial<User>): Promise<User> {
     return this.userModel.create(data as any);
   }
